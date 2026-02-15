@@ -1,8 +1,10 @@
-use std::{default, time::Duration};
+use std::{error::Error, time::Duration};
 
-use schemars::schema::Schema;
+use schemars::Schema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::OllamaApiError;
 
 /// Common options for most Ollama API calls
 #[derive(Debug, Serialize, Default)]
@@ -117,7 +119,7 @@ pub struct GenerateChatMessageRequest<'a> {
 }
 
 /// The API response to a [`GenerateChatMessageRequest`] request
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub struct GenerateChatMessageResponse {
     /// Model name used for generating the message
     pub model: String,
@@ -148,9 +150,31 @@ pub struct GenerateChatMessageResponse {
     pub logprobs: Vec<LogProb>,
 }
 
+/// The partial messages produced by the model, if using the [`GenerateChatMessageRequest::stream`]
+/// option
+#[derive(Debug, Deserialize)]
+pub struct StreamChatPartialResponse {
+    /// the name of the model, that produced the message
+    pub model: String,
+    /// an ISO 8601 encoded Timestamp of the response creation
+    pub created_at: String,
+    /// the partilally generated message
+    pub message: GeneratedMessage,
+    /// whether the model is done
+    pub done: bool,
+}
+
+/// The possible responses Reurned by the API
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum StreamChatResponse {
+    Chunk(StreamChatPartialResponse),
+    Last(GenerateChatMessageResponse),
+}
+
 /// The representation of a message genererated by the model. We can omit the 'role' field, as it
 /// is always assistant.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub struct GeneratedMessage {
     /// The message content as text
     pub content: String,

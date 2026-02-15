@@ -1,4 +1,3 @@
-#![allow(unused)]
 use ratatui::{
     Terminal,
     crossterm::{
@@ -8,11 +7,9 @@ use ratatui::{
     },
     prelude::CrosstermBackend,
 };
-use std::io;
-use tracing::info;
-use tracing_subscriber::FmtSubscriber;
+use std::{collections::HashMap, io};
 
-use crate::{ollama::connection::OllamaConnection, ui::App};
+use crate::{ollama::agent::OllamaAgent, ui::App};
 
 mod ollama;
 mod tools;
@@ -20,7 +17,8 @@ mod ui;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let agent = OllamaConnection::new("http://localhost:11434".to_string());
+    let tools = HashMap::new();
+    let agent_handle = OllamaAgent::new("http://localhost:11434".to_string(), tools);
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -28,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(agent);
+    let mut app = App::new(agent_handle);
     let res = app.run(&mut terminal).await;
 
     disable_raw_mode()?;

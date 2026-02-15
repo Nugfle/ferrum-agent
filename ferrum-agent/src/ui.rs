@@ -11,11 +11,17 @@ use ratatui::{
 use std::io;
 use tui_textarea::TextArea;
 
-use crate::ollama::connection::OllamaConnection;
+use crate::ollama::agent::{AgentCommand, AgentHandle};
+
+#[derive(Debug, Clone)]
+pub struct UIMessage {
+    author: String,
+    content: String,
+}
 
 pub struct App<'a> {
-    agent: OllamaConnection,
-    messages: Vec<(String, String)>,
+    agent_handle: AgentHandle,
+    messages: Vec<UIMessage>,
     input: TextArea<'a>,
     current_model: String,
     is_processing: bool,
@@ -24,7 +30,7 @@ pub struct App<'a> {
 }
 
 impl<'a> App<'a> {
-    pub fn new(agent: OllamaConnection) -> Self {
+    pub fn new(agent_handle: AgentHandle) -> Self {
         let mut input = TextArea::default();
         input.set_block(
             Block::default()
@@ -35,10 +41,10 @@ impl<'a> App<'a> {
         input.set_cursor_line_style(Style::default());
 
         Self {
-            agent,
+            agent_handle,
             input,
             messages: Vec::new(),
-            current_model: "qwen2.5-coder:14b".to_string(),
+            current_model: "my-coder".to_string(),
             is_processing: false,
             should_quit: false,
             list_state: ListState::default(),
@@ -52,13 +58,18 @@ impl<'a> App<'a> {
             if let Event::Key(key) = event::read()? {
                 match key.code {
                     KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        _ = self
+                            .agent_handle
+                            .command_sender
+                            .send(AgentCommand::Stop)
+                            .await;
                         self.should_quit = true;
                     }
                     KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        self.current_model = if self.current_model == "qwen2.5-coder:14b" {
+                        self.current_model = if self.current_model == "my-coder" {
                             "llama3".to_string()
                         } else {
-                            "qwen2.5-coder:14b".to_string()
+                            "my-coder".to_string()
                         };
                     }
                     KeyCode::Enter => {
@@ -91,19 +102,18 @@ impl<'a> App<'a> {
                 .title("Input (Enter to send)"),
         );
 
-        self.is_processing = true;
-        self.messages.push(("User".to_string(), content.clone()));
-        let (response, thoughts_option) = self
-            .agent
-            .run_prompt(&self.current_model, &content, None)
+        self.messages.push(UIMessage {
+            author: "User".to_string(),
+            content: content.clone(),
+        });
+        let cmd = AgentCommand::GeneratePrompt(content);
+        // ToDo: add recovery
+        self.agent_handle
+            .command_sender
+            .send(cmd)
             .await
-            .unwrap();
-        self.is_processing = false;
-
-        if let Some(thoughts) = thoughts_option {
-            self.messages.push(("Assistant".to_string(), thoughts));
-        }
-        self.messages.push(("Assistant".to_string(), response));
+            .expect("can't reach agent");
+        self.is_processing = true;
 
         // Auto-scroll to the bottom
         // We select the index of the last item
@@ -125,14 +135,14 @@ impl<'a> App<'a> {
         let messages: Vec<ListItem> = self
             .messages
             .iter()
-            .map(|(role, content)| {
+            .map(|m| {
                 let header = Line::from(vec![Span::styled(
-                    format!("{}: ", role),
+                    format!("{}: ", m.author),
                     Style::default()
                         .add_modifier(Modifier::BOLD)
                         .fg(Color::Cyan),
                 )]);
-                let content_lines = vec![header, Line::from(content.as_str()), Line::from("")];
+                let content_lines = vec![header, Line::from(m.content.as_str()), Line::from("")];
                 ListItem::new(content_lines)
             })
             .collect();
