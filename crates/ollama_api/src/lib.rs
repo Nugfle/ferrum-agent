@@ -1,9 +1,6 @@
 #![allow(unused)]
-use std::str::Bytes;
 
-use crate::dtos::{
-    GenerateChatMessageRequest, GenerateChatMessageResponse, Role, StreamChatResponse,
-};
+use crate::dtos::{GenerateChatMessageRequest, GenerateChatMessageResponse, Role, StreamChatPartialResponse, StreamChatResponse, Tool, ToolCall};
 use futures_util::stream::Stream;
 use futures_util::{StreamExt, TryStreamExt};
 use reqwest::{Client, Response};
@@ -12,7 +9,7 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 pub mod dtos;
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum OllamaApiError {
     #[error("Can't connect to ollama: {0}")]
     Unreachable(String),
@@ -38,12 +35,7 @@ impl From<reqwest::Error> for OllamaApiError {
         } else if value.is_decode() {
             OllamaApiError::DecodeFailiure(value.to_string())
         } else if value.is_status() {
-            OllamaApiError::ErrorStatus(
-                value
-                    .status()
-                    .expect("is error status, requires status to be set")
-                    .to_string(),
-            )
+            OllamaApiError::ErrorStatus(value.status().expect("is error status, requires status to be set").to_string())
         } else if value.is_request() {
             OllamaApiError::BadRequest(value.to_string())
         } else {
@@ -65,29 +57,32 @@ pub struct ApiConnection {
 
 impl ApiConnection {
     pub fn new(url: String) -> Self {
-        Self {
-            url,
-            client: Client::new(),
-        }
+        Self { url, client: Client::new() }
     }
     /// sends the request to the model and waits for a complete response. This method will modify
     /// the body to set stream to false. If you need a non blocking version that gives you access
     /// to a live token stream use [`Self::run_chat_prompt_stream`].
     pub async fn run_chat_prompt_blocking<'a>(
         &self,
-        body: GenerateChatMessageRequest<'a>,
+        body: &mut GenerateChatMessageRequest<'a>,
     ) -> Result<GenerateChatMessageResponse, OllamaApiError> {
-        if body.stream.is_none_or(|s| s) {}
-        let url = format!("{}/api/chat", self.url);
-        let resp = self
-            .client
-            .post(url)
-            .json(&body)
-            .send()
-            .await?
-            .error_for_status()?;
-        let text = resp.text().await?;
-        Ok(serde_json::from_str(&text)?)
+        let mut receiver = self.run_chat_prompt_stream(body).await?;
+
+        let mut message_content: String = String::new();
+        let mut tool_calls: Vec<dtos::ToolCall> = Vec::new();
+        let mut images: Vec<String> = Vec::new();
+        let mut thoughts: Option<String> = None;
+
+        while let Some(msg_res) = receiver.recv().await {
+            match msg_res? {
+                StreamChatResponse::Chunk(chunk) => {
+                    put_chunks_into_buffers(&mut message_content, &mut tool_calls, &mut images, &mut thoughts, chunk)?
+                }
+                StreamChatResponse::Last(mut last) => return Ok(handle_last(message_content, tool_calls, images, thoughts, last)),
+            }
+        }
+
+        Err(OllamaApiError::Custom("The stream ended unexpectedly without 'Last' chunk".to_string()))
     }
 
     /// Runs the chat prompt as a stream. Returns a channel which will contain the partial messges
@@ -95,10 +90,8 @@ impl ApiConnection {
     /// [`ApiConnection::run_chat_prompt_blocking`]
     pub async fn run_chat_prompt_stream<'a>(
         &self,
-        mut body: GenerateChatMessageRequest<'a>,
-    ) -> mpsc::Receiver<Result<StreamChatResponse, OllamaApiError>> {
-        let (s, r) = mpsc::channel(300);
-
+        body: &mut GenerateChatMessageRequest<'a>,
+    ) -> Result<mpsc::Receiver<Result<StreamChatResponse, OllamaApiError>>, OllamaApiError> {
         body.stream = Some(true);
         let resp = self
             .client
@@ -106,23 +99,59 @@ impl ApiConnection {
             .json(&body)
             .send()
             .await
-            .and_then(|r| r.error_for_status());
-
-        match resp {
-            Ok(resp) => {
-                tokio::spawn(async move { handle_stream_response(resp, s).await });
-            }
-            Err(e) => _ = s.send(Err(e.into())).await,
-        }
-        r
+            .and_then(|r| r.error_for_status())?;
+        let (s, r) = mpsc::channel(300);
+        tokio::spawn(async move { handle_stream_response(resp, s) });
+        Ok(r)
     }
 }
+pub fn handle_last(
+    mut content_buf: String,
+    mut tool_buf: Vec<ToolCall>,
+    mut image_buf: Vec<String>,
+    mut thoughts_buf: Option<String>,
+    mut last: GenerateChatMessageResponse,
+) -> GenerateChatMessageResponse {
+    content_buf.push_str(&last.message.content);
+    tool_buf.extend_from_slice(&last.message.tool_calls);
+    image_buf.extend_from_slice(&last.message.images);
+    if let Some(new_thoughts) = last.message.thinking {
+        thoughts_buf.get_or_insert_with(String::new).push_str(&new_thoughts);
+    }
 
-async fn handle_stream_response<T: DeserializeOwned>(
-    response: Response,
-    sender: mpsc::Sender<Result<T, OllamaApiError>>,
-) {
-    let mut stream = response.bytes_stream();
+    last.message.content = content_buf;
+    last.message.tool_calls = tool_buf;
+    last.message.images = image_buf;
+    last.message.thinking = thoughts_buf;
+
+    last
+}
+
+pub fn put_chunks_into_buffers(
+    content_buf: &mut String,
+    tool_buf: &mut Vec<ToolCall>,
+    image_buf: &mut Vec<String>,
+    thoughts_buf: &mut Option<String>,
+    chunk: StreamChatPartialResponse,
+) -> Result<(), OllamaApiError> {
+    content_buf.push_str(&chunk.message.content);
+    tool_buf.extend_from_slice(&chunk.message.tool_calls);
+    image_buf.extend_from_slice(&chunk.message.images);
+    if let Some(new_thoughts) = chunk.message.thinking {
+        thoughts_buf.get_or_insert_with(String::new).push_str(&new_thoughts);
+    }
+
+    if chunk.done {
+        return Err(OllamaApiError::Custom("Invalid API operation. Sent 'done' in a non 'done' response".to_string()));
+    }
+    _ = chunk.created_at;
+    _ = chunk.model;
+
+    Ok(())
+}
+
+async fn handle_stream_response<T: DeserializeOwned>(mut resp: Response, sender: mpsc::Sender<Result<T, OllamaApiError>>) {
+    let mut stream = resp.bytes_stream();
     let mut buffer = Vec::new();
     while let Some(bytes_result) = stream.next().await {
         match bytes_result {
@@ -133,9 +162,7 @@ async fn handle_stream_response<T: DeserializeOwned>(
                     .position(|b| *b == b'\n')
                     .and_then(|pos| Some(buffer.drain(..pos).collect::<Vec<u8>>()))
                 {
-                    _ = sender
-                        .send(serde_json::from_slice::<T>(&line).map_err(|e| e.into()))
-                        .await;
+                    _ = sender.send(serde_json::from_slice::<T>(&line).map_err(|e| e.into())).await;
                 }
             }
             Err(e) => _ = sender.send(Err(e.into())).await,

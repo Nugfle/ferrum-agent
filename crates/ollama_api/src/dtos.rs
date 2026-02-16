@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::OllamaApiError;
 
 /// Common options for most Ollama API calls
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Default, Clone)]
 pub struct OllamaRequestOptions {
     /// Random seed used for reproducible outputs
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -43,7 +43,7 @@ pub struct OllamaRequestOptions {
 }
 
 /// specifies the time that a model should remain in Memory after completing the generation
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy)]
 pub enum KeepAlive {
     #[default]
     Indefinitely,
@@ -51,7 +51,7 @@ pub enum KeepAlive {
 }
 
 /// DTO for generating Embeddings
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Default, Clone)]
 pub struct GenerateEmbeddingRequest<'a> {
     /// The model to use when generating the embeddings, f.e. ``"nomic-embed-text"``
     pub model: &'a str,
@@ -71,7 +71,7 @@ pub struct GenerateEmbeddingRequest<'a> {
     pub options: Option<OllamaRequestOptions>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct GenerateEmbeddingResponse {
     /// The model used for generating the response, f.e. ``"nomic-embed-text"``
     pub model: String,
@@ -85,7 +85,7 @@ pub struct GenerateEmbeddingResponse {
     pub prompt_eval_count: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct GenerateChatMessageRequest<'a> {
     /// The model name
     pub model: &'a str,
@@ -119,7 +119,7 @@ pub struct GenerateChatMessageRequest<'a> {
 }
 
 /// The API response to a [`GenerateChatMessageRequest`] request
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct GenerateChatMessageResponse {
     /// Model name used for generating the message
     pub model: String,
@@ -152,7 +152,7 @@ pub struct GenerateChatMessageResponse {
 
 /// The partial messages produced by the model, if using the [`GenerateChatMessageRequest::stream`]
 /// option
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct StreamChatPartialResponse {
     /// the name of the model, that produced the message
     pub model: String,
@@ -165,7 +165,7 @@ pub struct StreamChatPartialResponse {
 }
 
 /// The possible responses Reurned by the API
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum StreamChatResponse {
     Chunk(StreamChatPartialResponse),
@@ -174,7 +174,7 @@ pub enum StreamChatResponse {
 
 /// The representation of a message genererated by the model. We can omit the 'role' field, as it
 /// is always assistant.
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct GeneratedMessage {
     /// The message content as text
     pub content: String,
@@ -191,7 +191,7 @@ pub struct GeneratedMessage {
 }
 
 /// The representation of a chat Message. A Message MUST have a Role and a content.
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Default, Clone)]
 pub struct Message {
     /// Author of the message.
     pub role: Role,
@@ -219,13 +219,13 @@ pub enum Role {
 }
 
 /// Represents an explicit call to a tool
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ToolCall {
     pub function: ToolCallFunction,
 }
 
 /// Represents and explicit call to a tool function, including the name, description and arguments
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ToolCallFunction {
     /// the name of the function to call
     pub name: String,
@@ -238,7 +238,7 @@ pub struct ToolCallFunction {
 }
 
 /// Representation of an available tool for the model to use
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct Tool {
     #[serde(rename = "type")]
     pub tool_type: ToolType,
@@ -247,25 +247,25 @@ pub struct Tool {
 }
 
 /// The tool type is required by the API, but is always Function
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone, Copy)]
 pub enum ToolType {
     #[serde(rename = "function")]
     Function,
 }
 
 /// Represents an available tool function
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct ToolFunction {
     /// The function name
-    name: String,
+    pub name: String,
     /// A JSON schema for the parameters of the function
-    parameters: Schema,
+    pub parameters: schemars::Schema,
     /// A short description of what the function does in human readable form
-    description: String,
+    pub description: String,
 }
 
 /// Represents the format in which the model should respond
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ResponseFormat {
     /// Asks the model, to format its output as valid JSON
     Json,
@@ -274,7 +274,7 @@ pub enum ResponseFormat {
 }
 
 /// Represents the verbosity of the thinking output of the model. The default is 'true'.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum ThinkLevel {
     Bool(bool),
     High,
@@ -284,7 +284,7 @@ pub enum ThinkLevel {
 
 /// Representation of a selected token and its probability, as well as all other viable tokens at
 /// this position and their respective probabilities
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct LogProb {
     /// the text representation of the token
     token: String,
@@ -297,7 +297,7 @@ pub struct LogProb {
 }
 
 /// Representation of a secondary, unselected Token
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct LogProbSecondary {
     /// the text representation of the token
     pub token: String,

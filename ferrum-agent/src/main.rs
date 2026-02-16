@@ -18,7 +18,11 @@ mod ui;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tools = HashMap::new();
-    let agent_handle = OllamaAgent::new("http://localhost:11434".to_string(), tools);
+    let agent_handle = OllamaAgent::new(
+        "http://localhost:11434".to_string(),
+        tools,
+        "my-agent".to_string(),
+    );
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();

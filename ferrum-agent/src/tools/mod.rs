@@ -1,4 +1,5 @@
-use schemars::{JsonSchema, schema::RootSchema};
+use ollama_api::dtos::{Tool as ApiTool, ToolFunction};
+use schemars::{JsonSchema, Schema};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::pin::Pin;
@@ -16,7 +17,7 @@ pub trait Tool: Send + Sync {
         args: Self::Arguments,
     ) -> Pin<Box<dyn Future<Output = Result<String, RunToolError>> + Send>>;
 
-    fn get_argument_schema(&self) -> RootSchema {
+    fn get_argument_schema(&self) -> Schema {
         schemars::schema_for!(Self::Arguments)
     }
 }
@@ -36,7 +37,18 @@ pub enum RunToolError {
 pub trait DynTool: Send + Sync {
     fn name(&self) -> &'static str;
     fn description(&self) -> &'static str;
-    fn schema(&self) -> RootSchema;
+    fn schema(&self) -> Schema;
+
+    fn as_ollama_api_tool(&self) -> ApiTool {
+        ApiTool {
+            tool_type: ollama_api::dtos::ToolType::Function,
+            function: ToolFunction {
+                name: self.name().to_string(),
+                parameters: self.schema(),
+                description: self.description().to_string(),
+            },
+        }
+    }
 
     // Takes generic JSON, returns a Future
     fn run(
@@ -52,7 +64,7 @@ impl<T: Tool> DynTool for T {
     fn description(&self) -> &'static str {
         Self::DESCRIPTION
     }
-    fn schema(&self) -> RootSchema {
+    fn schema(&self) -> Schema {
         self.get_argument_schema()
     }
 

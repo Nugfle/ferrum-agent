@@ -1,3 +1,4 @@
+use ollama_api::OllamaApiError;
 use ratatui::{
     Terminal,
     backend::Backend,
@@ -14,9 +15,47 @@ use tui_textarea::TextArea;
 use crate::ollama::agent::{AgentCommand, AgentHandle};
 
 #[derive(Debug, Clone)]
-pub struct UIMessage {
+pub enum UIMessage {
+    TextMessage(UITextMessage),
+    APIError(OllamaApiError),
+    ToolUse(UIToolUseMessage),
+}
+
+impl UIMessage {
+    pub fn get_author(&self) -> &str {
+        match self {
+            UIMessage::TextMessage(m) => &m.author,
+            UIMessage::ToolUse(_) => "System",
+            UIMessage::APIError(_) => "System",
+        }
+    }
+    pub fn get_text(&self) -> String {
+        match self {
+            UIMessage::TextMessage(m) => m.content.clone(),
+            UIMessage::ToolUse(t) => format!("using {} with arguments: {}. Status: {:?}", t.tool_name, t.arguments, t.status),
+            UIMessage::APIError(e) => format!("the agent crashed: {}", e),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UITextMessage {
     author: String,
     content: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct UIToolUseMessage {
+    tool_name: String,
+    arguments: String,
+    status: ToolUseStatus,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ToolUseStatus {
+    InProgress,
+    Success,
+    Failure,
 }
 
 pub struct App<'a> {
@@ -32,11 +71,7 @@ pub struct App<'a> {
 impl<'a> App<'a> {
     pub fn new(agent_handle: AgentHandle) -> Self {
         let mut input = TextArea::default();
-        input.set_block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Input (Enter to send)"),
-        );
+        input.set_block(Block::default().borders(Borders::ALL).title("Input (Enter to send)"));
 
         input.set_cursor_line_style(Style::default());
 
@@ -58,11 +93,7 @@ impl<'a> App<'a> {
             if let Event::Key(key) = event::read()? {
                 match key.code {
                     KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        _ = self
-                            .agent_handle
-                            .command_sender
-                            .send(AgentCommand::Stop)
-                            .await;
+                        _ = self.agent_handle.command_sender.send(AgentCommand::Stop).await;
                         self.should_quit = true;
                     }
                     KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -96,23 +127,16 @@ impl<'a> App<'a> {
 
         // Clear input by overwriting the widget
         self.input = TextArea::default();
-        self.input.set_block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Input (Enter to send)"),
-        );
+        self.input
+            .set_block(Block::default().borders(Borders::ALL).title("Input (Enter to send)"));
 
-        self.messages.push(UIMessage {
+        self.messages.push(UIMessage::TextMessage(UITextMessage {
             author: "User".to_string(),
             content: content.clone(),
-        });
+        }));
         let cmd = AgentCommand::GeneratePrompt(content);
         // ToDo: add recovery
-        self.agent_handle
-            .command_sender
-            .send(cmd)
-            .await
-            .expect("can't reach agent");
+        self.agent_handle.command_sender.send(cmd).await.expect("can't reach agent");
         self.is_processing = true;
 
         // Auto-scroll to the bottom
@@ -125,11 +149,7 @@ impl<'a> App<'a> {
     fn ui(&mut self, f: &mut ratatui::Frame) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(1),
-                Constraint::Length(1),
-                Constraint::Length(5),
-            ])
+            .constraints([Constraint::Min(1), Constraint::Length(1), Constraint::Length(5)])
             .split(f.area());
 
         let messages: Vec<ListItem> = self
@@ -137,12 +157,10 @@ impl<'a> App<'a> {
             .iter()
             .map(|m| {
                 let header = Line::from(vec![Span::styled(
-                    format!("{}: ", m.author),
-                    Style::default()
-                        .add_modifier(Modifier::BOLD)
-                        .fg(Color::Cyan),
+                    format!("{}: ", m.get_author()),
+                    Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan),
                 )]);
-                let content_lines = vec![header, Line::from(m.content.as_str()), Line::from("")];
+                let content_lines = vec![header, Line::from(m.get_text()), Line::from("")];
                 ListItem::new(content_lines)
             })
             .collect();
@@ -159,10 +177,7 @@ impl<'a> App<'a> {
             Style::default().bg(Color::Blue).fg(Color::White)
         };
 
-        let status_text = format!(
-            " Model: {} | Mode: Standard | [Esc] Quit | [Ctrl+M] Switch Model ",
-            self.current_model
-        );
+        let status_text = format!(" Model: {} | Mode: Standard | [Esc] Quit | [Ctrl+M] Switch Model ", self.current_model);
         let status_bar = Paragraph::new(status_text)
             .style(status_style)
             .alignment(ratatui::layout::Alignment::Center);
