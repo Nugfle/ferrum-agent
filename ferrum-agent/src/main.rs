@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt().with_writer(non_blocking).with_ansi(false).init();
 
     let tools = HashMap::new();
-    let agent_handle = OllamaAgent::new("http://localhost:11434".to_string(), tools, "my-coder".to_string());
+    let (cmd_sender, _) = OllamaAgent::new("http://localhost:11434".to_string(), tools, "my-coder".to_string());
 
     info!("loaded tools and started agent!");
 
@@ -35,16 +35,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = Terminal::new(backend)?;
     info!("Initialized terminal!");
 
-    let mut app = App::new(agent_handle);
-    let res = app.run(&mut terminal).await;
+    let mut app = App::new(cmd_sender).await;
+    app.run(&mut terminal).await;
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
-
-    if let Err(err) = res {
-        println!("{:?}", err)
-    }
 
     Ok(())
 }

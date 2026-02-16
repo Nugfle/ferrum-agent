@@ -87,3 +87,20 @@
 2026-02-16T22:02:35.782344Z  INFO ferrum::ollama::agent: Starting the main Agent Loop
 2026-02-16T22:02:38.776880Z  INFO ferrum::ui: Sending a prompt request with content: hello
 2026-02-16T22:03:01.222156Z  INFO ferrum::ui: Sending a prompt request with content: why is the sky blue
+2026-02-16T22:42:21.156306Z  INFO ferrum: loaded tools and started agent!
+2026-02-16T22:42:21.156572Z  INFO ferrum: Initialized terminal!
+2026-02-16T22:42:21.156603Z  INFO ferrum::ui: start running App loop
+2026-02-16T22:42:21.179047Z  INFO ferrum::ollama::agent: Starting the main Agent Loop
+2026-02-16T22:42:33.867265Z  INFO ferrum::ui: Sending a prompt request with content: hello
+2026-02-16T22:43:11.315402Z  INFO ferrum: loaded tools and started agent!
+2026-02-16T22:43:11.315689Z  INFO ferrum: Initialized terminal!
+2026-02-16T22:43:11.315721Z  INFO ferrum::ui: start running App loop
+2026-02-16T22:43:11.338057Z  INFO ferrum::ollama::agent: Starting the main Agent Loop
+2026-02-16T22:43:14.599193Z  INFO ferrum::ui: Sending a prompt request with content: hello there
+2026-02-16T22:43:25.386626Z  INFO ferrum::ui: Sending a prompt request with content: why is the sky blue
+2026-02-16T22:44:50.724416Z  INFO ferrum: loaded tools and started agent!
+2026-02-16T22:44:50.724609Z  INFO ferrum: Initialized terminal!
+2026-02-16T22:44:50.724641Z  INFO ferrum::ui: start running App loop
+2026-02-16T22:44:50.753964Z  INFO ferrum::ollama::agent: Starting the main Agent Loop
+2026-02-16T22:44:54.308836Z  INFO ferrum::ui: Sending a prompt request with content: hello
+2026-02-16T22:45:33.949481Z  INFO ferrum::ui: Sending a prompt request with content: can you write up a simple ui with ratatui for rust

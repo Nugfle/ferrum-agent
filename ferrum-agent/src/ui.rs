@@ -9,18 +9,20 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
-use tokio::{
-    select,
-    time::{MissedTickBehavior, interval},
-};
+use tokio::sync::mpsc;
 use tracing::info;
 
-use std::{io, time::Duration};
 use tui_textarea::TextArea;
 
-use crate::ollama::agent::{AgentCommand, AgentHandle};
+use crate::ollama::agent::AgentCommand;
+
+#[derive(Debug, Clone)]
+pub enum UIEvent {
+    WindowEvent(Event),
+    MessageRecieved(UIMessage),
+}
 
 #[derive(Debug, Clone)]
 pub enum UIMessage {
@@ -85,62 +87,90 @@ pub enum ToolUseStatus {
 
 #[derive(Debug)]
 pub struct App<'a> {
-    agent_handle: AgentHandle,
     messages: Vec<UIMessage>,
     input: TextArea<'a>,
     current_model: String,
     is_processing: bool,
     should_quit: bool,
     vertical_scroll: u16,
+
+    agent_cmd_sender: mpsc::Sender<AgentCommand>,
+
+    event_receiver: mpsc::Receiver<UIEvent>,
+    event_sender: mpsc::Sender<UIEvent>,
+}
+
+async fn window_event_loop(event_sender: mpsc::Sender<UIEvent>) {
+    loop {
+        let event = event::read().expect("failed to read window event");
+        event_sender
+            .send(UIEvent::WindowEvent(event))
+            .await
+            .expect("failed to send UI event to main loop");
+    }
 }
 
 impl<'a> App<'a> {
-    pub fn new(agent_handle: AgentHandle) -> Self {
+    pub async fn new(cmd_sender: mpsc::Sender<AgentCommand>) -> Self {
         let mut input = TextArea::default();
         input.set_block(Block::default().borders(Borders::ALL).title("Input (Enter to send)"));
 
         input.set_cursor_line_style(Style::default());
 
+        let (s, r) = mpsc::channel(300);
+        cmd_sender
+            .send(AgentCommand::ChangeOutChannel(s.clone()))
+            .await
+            .expect("failed to send swap out channel request to Agent");
+
+        let window_event_sender = s.clone();
+        tokio::spawn(async move { window_event_loop(window_event_sender).await });
+
         Self {
-            agent_handle,
             input,
             messages: Vec::new(),
             current_model: "my-coder".to_string(),
             is_processing: false,
             should_quit: false,
             vertical_scroll: 0,
+
+            agent_cmd_sender: cmd_sender,
+
+            event_receiver: r,
+            event_sender: s,
         }
     }
 
-    pub async fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> io::Result<()> {
-        info!("start running App loop");
-        let mut render_interval = interval(Duration::from_millis(50));
-        render_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        loop {
-            select! {
-                _ = render_interval.tick() => {
-                    terminal.draw(|f| self.ui(f))?;
-                    if let Event::Key(key) = event::read()? {
-                        match key.code {
-                            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                _ = self.agent_handle.command_sender.send(AgentCommand::Stop).await;
-                                self.should_quit = true;
-                            }
-                            KeyCode::Enter => {
-                                self.on_send().await;
-                            }
-                            _ => {
-                                self.input.input(key);
-                            }
-                        }
-                    }
+    pub fn get_ui_event_sender(&self) -> mpsc::Sender<UIEvent> {
+        self.event_sender.clone()
+    }
 
-                    if self.should_quit {
-                        return Ok(());
-                    }
+    pub async fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) {
+        info!("start running App loop");
+        terminal.draw(|f| self.ui(f)).expect("failed to draw ui");
+        while let Some(event) = self.event_receiver.recv().await {
+            match event {
+                UIEvent::WindowEvent(window_event) => match window_event {
+                    Event::Key(key) => match key.code {
+                        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            _ = self.agent_cmd_sender.send(AgentCommand::Stop).await;
+                            self.should_quit = true;
+                        }
+                        KeyCode::Enter => {
+                            self.on_send().await;
+                        }
+                        _ => {
+                            self.input.input(key);
+                        }
+                    },
+                    _ => {}
                 },
-                Some(msg) = self.agent_handle.message_reciever.recv() =>  self.on_msg(msg).await,
+                UIEvent::MessageRecieved(msg) => self.on_msg(msg).await,
             }
+            if self.should_quit {
+                return;
+            }
+            terminal.draw(|f| self.ui(f)).expect("failed to draw ui");
         }
     }
 
@@ -183,8 +213,10 @@ impl<'a> App<'a> {
             content: content.clone(),
         }));
 
-        let cmd = AgentCommand::GeneratePrompt(content);
-        self.agent_handle.command_sender.send(cmd).await.expect("can't reach agent");
+        self.agent_cmd_sender
+            .send(AgentCommand::GeneratePrompt(content))
+            .await
+            .expect("can't reach agent");
         self.is_processing = true;
     }
 

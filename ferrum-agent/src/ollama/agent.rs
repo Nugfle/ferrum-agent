@@ -9,17 +9,15 @@ use tokio::select;
 use tokio::sync::mpsc;
 use tracing::{debug, info};
 
-use crate::{tools::DynTool, ui::UIMessage};
-
-#[derive(Debug)]
-pub struct AgentHandle {
-    pub command_sender: mpsc::Sender<AgentCommand>,
-    pub message_reciever: mpsc::Receiver<UIMessage>,
-}
+use crate::{
+    tools::DynTool,
+    ui::{UIEvent, UIMessage},
+};
 
 #[derive(Debug, Clone)]
 pub enum AgentCommand {
     GeneratePrompt(String),
+    ChangeOutChannel(mpsc::Sender<UIEvent>),
     ChangeMode(AgentMode),
     ChangeModel(String),
     ClearHistory,
@@ -41,7 +39,7 @@ pub struct OllamaAgent {
     /// this is the command channel from the UI (up)
     command_reciever: mpsc::Receiver<AgentCommand>,
     /// this is the connection to the UI (up)
-    message_out: mpsc::Sender<UIMessage>,
+    message_out: mpsc::Sender<UIEvent>,
 
     /// this is our way of communicating with the API (down)
     api_connection: ApiConnection,
@@ -50,7 +48,7 @@ pub struct OllamaAgent {
 }
 
 impl OllamaAgent {
-    pub fn new(url: String, tools: HashMap<String, Box<dyn DynTool>>, model: String) -> AgentHandle {
+    pub fn new(url: String, tools: HashMap<String, Box<dyn DynTool>>, model: String) -> (mpsc::Sender<AgentCommand>, mpsc::Receiver<UIEvent>) {
         let (command_sender, command_reciever) = mpsc::channel(8);
         let (message_sender, message_reciever) = mpsc::channel(8);
         tokio::spawn(async move {
@@ -67,10 +65,7 @@ impl OllamaAgent {
             // ToDo: add recovery
             this.run().await;
         });
-        AgentHandle {
-            command_sender,
-            message_reciever,
-        }
+        (command_sender, message_reciever)
     }
 
     async fn start_generating_prompt(&mut self, prompt: String) {
@@ -98,7 +93,7 @@ impl OllamaAgent {
             Ok(v) => {
                 self.api_msg_receiver = Some(v);
             }
-            Err(e) => _ = self.message_out.send(UIMessage::APIError(e)).await,
+            Err(e) => _ = self.message_out.send(UIEvent::MessageRecieved(UIMessage::APIError(e))).await,
         }
     }
 
@@ -119,6 +114,7 @@ impl OllamaAgent {
                     match command {
                         AgentCommand::Stop => break,
                         AgentCommand::ClearHistory => self.history = Vec::new(),
+                        AgentCommand::ChangeOutChannel(channel) => self.message_out = channel,
                         AgentCommand::ChangeMode(mode) => self.mode = mode,
                         AgentCommand::ChangeModel(model) => self.model = model,
                         AgentCommand::GeneratePrompt(prompt) => self.start_generating_prompt(prompt).await
@@ -134,7 +130,7 @@ impl OllamaAgent {
                         }
                         Err(e) => {
                             self.message_out
-                                .send(UIMessage::APIError(e)).await
+                                .send(UIEvent::MessageRecieved(UIMessage::APIError(e))).await
                                 .map_err(|e| OllamaApiError::Custom(format!("Can't reach the UI: {}", e)))
                                 .unwrap();
                         },
@@ -149,7 +145,7 @@ impl OllamaAgent {
         debug!("got message chunk: {:#?}", chunk);
         // TODO: store stuff like tool calls, and execute them.
         self.message_out
-            .send(UIMessage::from(chunk))
+            .send(UIEvent::MessageRecieved(UIMessage::from(chunk)))
             .await
             .map_err(|e| OllamaApiError::Custom(format!("Can't reach the UI: {}", e)))
             .unwrap() // we crash if we can't reach the UI. 
@@ -158,7 +154,7 @@ impl OllamaAgent {
         debug!("got last message: {:#?}", last);
         // TODO: add tool use here
         self.message_out
-            .send(UIMessage::from(last))
+            .send(UIEvent::MessageRecieved(UIMessage::from(last)))
             .await
             .map_err(|e| OllamaApiError::Custom(format!("Can't reach the UI: {}", e)))
             .unwrap()
