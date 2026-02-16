@@ -3,18 +3,21 @@ use std::collections::HashMap;
 use futures_util::future::pending;
 use ollama_api::{
     ApiConnection, OllamaApiError,
-    dtos::{Message, Role, StreamChatResponse},
+    dtos::{GenerateChatMessageResponse, Message, Role, StreamChatPartialResponse, StreamChatResponse},
 };
 use tokio::select;
 use tokio::sync::mpsc;
+use tracing::{debug, info};
 
 use crate::{tools::DynTool, ui::UIMessage};
 
+#[derive(Debug)]
 pub struct AgentHandle {
     pub command_sender: mpsc::Sender<AgentCommand>,
-    pub message_reciever: mpsc::Receiver<Result<UIMessage, OllamaApiError>>,
+    pub message_reciever: mpsc::Receiver<UIMessage>,
 }
 
+#[derive(Debug, Clone)]
 pub enum AgentCommand {
     GeneratePrompt(String),
     ChangeMode(AgentMode),
@@ -23,6 +26,7 @@ pub enum AgentCommand {
     Stop,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub enum AgentMode {
     Plan,
     Build,
@@ -33,9 +37,15 @@ pub struct OllamaAgent {
     mode: AgentMode,
     model: String,
     tools: HashMap<String, Box<dyn DynTool>>,
+
+    /// this is the command channel from the UI (up)
     command_reciever: mpsc::Receiver<AgentCommand>,
-    message_out: mpsc::Sender<Result<UIMessage, OllamaApiError>>,
+    /// this is the connection to the UI (up)
+    message_out: mpsc::Sender<UIMessage>,
+
+    /// this is our way of communicating with the API (down)
     api_connection: ApiConnection,
+    /// this is the connection to the OllamaAPI (down)
     api_msg_receiver: Option<mpsc::Receiver<Result<StreamChatResponse, OllamaApiError>>>,
 }
 
@@ -82,14 +92,18 @@ impl OllamaAgent {
             logprobs: None,
             top_logprobs: None,
         };
+        debug!("Start running prompt: {:?}", body);
 
         match self.api_connection.run_chat_prompt_stream(&mut body).await {
-            Ok(v) => {}
-            Err(e) => {}
+            Ok(v) => {
+                self.api_msg_receiver = Some(v);
+            }
+            Err(e) => _ = self.message_out.send(UIMessage::APIError(e)).await,
         }
     }
 
     async fn run(&mut self) {
+        info!("Starting the main Agent Loop");
         loop {
             // this future will not trigger if api_msg_receiver is None turning the select into a
             // simple await for the command channel
@@ -114,17 +128,39 @@ impl OllamaAgent {
                     match api_result {
                         Ok(message) => {
                             match message {
-                                StreamChatResponse::Chunk(chunk) => {}
-                                StreamChatResponse::Last(last) => {}
+                                StreamChatResponse::Chunk(chunk) => self.process_message_chunk(chunk).await,
+                                StreamChatResponse::Last(last) => self.process_last_message(last).await,
                             }
                         }
                         Err(e) => {
-
+                            self.message_out
+                                .send(UIMessage::APIError(e)).await
+                                .map_err(|e| OllamaApiError::Custom(format!("Can't reach the UI: {}", e)))
+                                .unwrap();
                         },
                     }
 
                 }
             }
         }
+    }
+
+    async fn process_message_chunk(&mut self, chunk: StreamChatPartialResponse) {
+        debug!("got message chunk: {:#?}", chunk);
+        // TODO: store stuff like tool calls, and execute them.
+        self.message_out
+            .send(UIMessage::from(chunk))
+            .await
+            .map_err(|e| OllamaApiError::Custom(format!("Can't reach the UI: {}", e)))
+            .unwrap() // we crash if we can't reach the UI. 
+    }
+    async fn process_last_message(&mut self, last: GenerateChatMessageResponse) {
+        debug!("got last message: {:#?}", last);
+        // TODO: add tool use here
+        self.message_out
+            .send(UIMessage::from(last))
+            .await
+            .map_err(|e| OllamaApiError::Custom(format!("Can't reach the UI: {}", e)))
+            .unwrap()
     }
 }

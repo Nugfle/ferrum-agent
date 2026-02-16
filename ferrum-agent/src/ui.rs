@@ -1,4 +1,7 @@
-use ollama_api::OllamaApiError;
+use ollama_api::{
+    OllamaApiError,
+    dtos::{GenerateChatMessageResponse, StreamChatPartialResponse},
+};
 use ratatui::{
     Terminal,
     backend::Backend,
@@ -6,10 +9,15 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
+use tokio::{
+    select,
+    time::{MissedTickBehavior, interval},
+};
+use tracing::info;
 
-use std::io;
+use std::{io, time::Duration};
 use tui_textarea::TextArea;
 
 use crate::ollama::agent::{AgentCommand, AgentHandle};
@@ -19,6 +27,23 @@ pub enum UIMessage {
     TextMessage(UITextMessage),
     APIError(OllamaApiError),
     ToolUse(UIToolUseMessage),
+}
+
+impl From<StreamChatPartialResponse> for UIMessage {
+    fn from(value: StreamChatPartialResponse) -> Self {
+        Self::TextMessage(UITextMessage {
+            author: "Assistent".to_string(),
+            content: value.message.content,
+        })
+    }
+}
+impl From<GenerateChatMessageResponse> for UIMessage {
+    fn from(value: GenerateChatMessageResponse) -> Self {
+        Self::TextMessage(UITextMessage {
+            author: "Assistent".to_string(),
+            content: value.message.content,
+        })
+    }
 }
 
 impl UIMessage {
@@ -58,6 +83,7 @@ pub enum ToolUseStatus {
     Failure,
 }
 
+#[derive(Debug)]
 pub struct App<'a> {
     agent_handle: AgentHandle,
     messages: Vec<UIMessage>,
@@ -65,7 +91,7 @@ pub struct App<'a> {
     current_model: String,
     is_processing: bool,
     should_quit: bool,
-    list_state: ListState, // We need this to control scrolling
+    vertical_scroll: u16,
 }
 
 impl<'a> App<'a> {
@@ -82,39 +108,60 @@ impl<'a> App<'a> {
             current_model: "my-coder".to_string(),
             is_processing: false,
             should_quit: false,
-            list_state: ListState::default(),
+            vertical_scroll: 0,
         }
     }
 
     pub async fn run<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> io::Result<()> {
+        info!("start running App loop");
+        let mut render_interval = interval(Duration::from_millis(50));
+        render_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
-            terminal.draw(|f| self.ui(f))?;
+            select! {
+                _ = render_interval.tick() => {
+                    terminal.draw(|f| self.ui(f))?;
+                    if let Event::Key(key) = event::read()? {
+                        match key.code {
+                            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                _ = self.agent_handle.command_sender.send(AgentCommand::Stop).await;
+                                self.should_quit = true;
+                            }
+                            KeyCode::Enter => {
+                                self.on_send().await;
+                            }
+                            _ => {
+                                self.input.input(key);
+                            }
+                        }
+                    }
 
-            if let Event::Key(key) = event::read()? {
-                match key.code {
-                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        _ = self.agent_handle.command_sender.send(AgentCommand::Stop).await;
-                        self.should_quit = true;
+                    if self.should_quit {
+                        return Ok(());
                     }
-                    KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        self.current_model = if self.current_model == "my-coder" {
-                            "llama3".to_string()
-                        } else {
-                            "my-coder".to_string()
-                        };
-                    }
-                    KeyCode::Enter => {
-                        self.on_send().await;
-                    }
-                    _ => {
-                        self.input.input(key);
+                },
+                Some(msg) = self.agent_handle.message_reciever.recv() =>  self.on_msg(msg).await,
+            }
+        }
+    }
+
+    async fn on_msg(&mut self, msg: UIMessage) {
+        match self.messages.last_mut() {
+            Some(UIMessage::TextMessage(latest)) => match msg {
+                UIMessage::TextMessage(new) => {
+                    if latest.author == new.author {
+                        latest.content.push_str(&new.content);
+                        return;
+                    } else {
+                        self.messages.push(UIMessage::TextMessage(new));
                     }
                 }
-            }
-
-            if self.should_quit {
-                return Ok(());
-            }
+                UIMessage::APIError(e) => {
+                    self.messages.push(UIMessage::APIError(e));
+                    self.is_processing = false;
+                }
+                UIMessage::ToolUse(_) => todo!(),
+            },
+            _ => self.messages.push(msg),
         }
     }
 
@@ -124,6 +171,7 @@ impl<'a> App<'a> {
         }
 
         let content = self.input.lines().join("\n");
+        info!("Sending a prompt request with content: {}", content);
 
         // Clear input by overwriting the widget
         self.input = TextArea::default();
@@ -134,16 +182,10 @@ impl<'a> App<'a> {
             author: "User".to_string(),
             content: content.clone(),
         }));
+
         let cmd = AgentCommand::GeneratePrompt(content);
-        // ToDo: add recovery
         self.agent_handle.command_sender.send(cmd).await.expect("can't reach agent");
         self.is_processing = true;
-
-        // Auto-scroll to the bottom
-        // We select the index of the last item
-        if !self.messages.is_empty() {
-            self.list_state.select(Some(self.messages.len() - 1));
-        }
     }
 
     fn ui(&mut self, f: &mut ratatui::Frame) {
@@ -152,24 +194,29 @@ impl<'a> App<'a> {
             .constraints([Constraint::Min(1), Constraint::Length(1), Constraint::Length(5)])
             .split(f.area());
 
-        let messages: Vec<ListItem> = self
-            .messages
-            .iter()
-            .map(|m| {
-                let header = Line::from(vec![Span::styled(
-                    format!("{}: ", m.get_author()),
-                    Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan),
-                )]);
-                let content_lines = vec![header, Line::from(m.get_text()), Line::from("")];
-                ListItem::new(content_lines)
-            })
-            .collect();
+        let mut text_lines = Vec::new();
 
-        let messages_list = List::new(messages)
+        for m in &self.messages {
+            // Header line
+            text_lines.push(Line::from(vec![Span::styled(
+                format!("{}: ", m.get_author()),
+                Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan),
+            )]));
+
+            // Content line (Paragraph will wrap this automatically!)
+            text_lines.push(Line::from(m.get_text()));
+
+            // Spacer line
+            text_lines.push(Line::from(""));
+        }
+
+        // 2. Create the Paragraph widget
+        let messages_paragraph = Paragraph::new(text_lines)
             .block(Block::default().borders(Borders::ALL).title("Chat History"))
-            .highlight_style(Style::default().add_modifier(Modifier::ITALIC));
+            .wrap(Wrap { trim: true })
+            .scroll((self.vertical_scroll, 0)); // You need to track a u16 for scroll offset
 
-        f.render_stateful_widget(messages_list, chunks[0], &mut self.list_state);
+        f.render_widget(messages_paragraph, chunks[0]);
 
         let status_style = if self.is_processing {
             Style::default().bg(Color::Yellow).fg(Color::Black)
@@ -177,7 +224,7 @@ impl<'a> App<'a> {
             Style::default().bg(Color::Blue).fg(Color::White)
         };
 
-        let status_text = format!(" Model: {} | Mode: Standard | [Esc] Quit | [Ctrl+M] Switch Model ", self.current_model);
+        let status_text = format!(" Model: {} | Mode: Standard | [Esc] Quit ", self.current_model);
         let status_bar = Paragraph::new(status_text)
             .style(status_style)
             .alignment(ratatui::layout::Alignment::Center);

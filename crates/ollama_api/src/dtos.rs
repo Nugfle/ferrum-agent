@@ -168,8 +168,8 @@ pub struct StreamChatPartialResponse {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum StreamChatResponse {
-    Chunk(StreamChatPartialResponse),
     Last(GenerateChatMessageResponse),
+    Chunk(StreamChatPartialResponse),
 }
 
 /// The representation of a message genererated by the model. We can omit the 'role' field, as it
@@ -339,9 +339,7 @@ impl Serialize for KeepAlive {
         S: serde::Serializer,
     {
         match self {
-            Self::Duration(d) => {
-                serializer.serialize_str(format!("{}s", d.as_secs().to_string()).as_str())
-            }
+            Self::Duration(d) => serializer.serialize_str(format!("{}s", d.as_secs().to_string()).as_str()),
             Self::Indefinitely => serializer.serialize_str("-1s"),
         }
     }

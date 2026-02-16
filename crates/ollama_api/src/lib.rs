@@ -1,4 +1,5 @@
 #![allow(unused)]
+use std::fmt::Debug;
 
 use crate::dtos::{GenerateChatMessageRequest, GenerateChatMessageResponse, Role, StreamChatPartialResponse, StreamChatResponse, Tool, ToolCall};
 use futures_util::stream::Stream;
@@ -7,6 +8,7 @@ use reqwest::{Client, Response};
 use serde::de::DeserializeOwned;
 use thiserror::Error;
 use tokio::sync::mpsc;
+use tracing::{info, instrument};
 pub mod dtos;
 
 #[derive(Error, Debug, Clone)]
@@ -17,7 +19,7 @@ pub enum OllamaApiError {
     TimedOut(String),
     #[error("Failed to decode the server response: {0}")]
     DecodeFailiure(String),
-    #[error("The request returned an error status")]
+    #[error("The request returned an error status: {0}")]
     ErrorStatus(String),
     #[error("Ther request was rejected because of an error in the body: {0}")]
     BadRequest(String),
@@ -101,7 +103,7 @@ impl ApiConnection {
             .await
             .and_then(|r| r.error_for_status())?;
         let (s, r) = mpsc::channel(300);
-        tokio::spawn(async move { handle_stream_response(resp, s) });
+        tokio::spawn(async move { handle_stream_response(resp, s).await });
         Ok(r)
     }
 }
@@ -160,9 +162,10 @@ async fn handle_stream_response<T: DeserializeOwned>(mut resp: Response, sender:
                 while let Some(line) = buffer
                     .iter()
                     .position(|b| *b == b'\n')
-                    .and_then(|pos| Some(buffer.drain(..pos).collect::<Vec<u8>>()))
+                    .and_then(|pos| Some(buffer.drain(..=pos).collect::<Vec<u8>>()))
                 {
-                    _ = sender.send(serde_json::from_slice::<T>(&line).map_err(|e| e.into())).await;
+                    let deserialized = serde_json::from_slice::<T>(&line).map_err(|e| e.into());
+                    _ = sender.send(deserialized).await;
                 }
             }
             Err(e) => _ = sender.send(Err(e.into())).await,
