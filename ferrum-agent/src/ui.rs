@@ -6,15 +6,14 @@ use ratatui::{
     Terminal,
     backend::Backend,
     crossterm::event::{self, Event, KeyCode, KeyModifiers},
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::Line,
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use tokio::sync::mpsc;
 use tracing::info;
-
-use tui_textarea::TextArea;
+use tui_input::{Input, backend::crossterm::EventHandler};
 
 use crate::ollama::agent::AgentCommand;
 
@@ -63,6 +62,14 @@ impl UIMessage {
             UIMessage::APIError(e) => format!("the agent crashed: {}", e),
         }
     }
+
+    pub fn get_text_ref(&self) -> &str {
+        match self {
+            UIMessage::TextMessage(m) => &m.content,
+            UIMessage::ToolUse(_) => "The agent is using a tool...",
+            UIMessage::APIError(_) => "There was an error when trying to access the API",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -86,9 +93,9 @@ pub enum ToolUseStatus {
 }
 
 #[derive(Debug)]
-pub struct App<'a> {
+pub struct App {
     messages: Vec<UIMessage>,
-    input: TextArea<'a>,
+    input: Input,
     current_model: String,
     is_processing: bool,
     should_quit: bool,
@@ -110,12 +117,9 @@ async fn window_event_loop(event_sender: mpsc::Sender<UIEvent>) {
     }
 }
 
-impl<'a> App<'a> {
+impl App {
     pub async fn new(cmd_sender: mpsc::Sender<AgentCommand>) -> Self {
-        let mut input = TextArea::default();
-        input.set_block(Block::default().borders(Borders::ALL).title("Input (Enter to send)"));
-
-        input.set_cursor_line_style(Style::default());
+        let input = Input::default();
 
         let (s, r) = mpsc::channel(300);
         cmd_sender
@@ -159,8 +163,10 @@ impl<'a> App<'a> {
                         KeyCode::Enter => {
                             self.on_send().await;
                         }
+                        KeyCode::Up => self.vertical_scroll -= 1,
+                        KeyCode::Down => self.vertical_scroll += 1,
                         _ => {
-                            self.input.input(key);
+                            self.input.handle_event(&window_event);
                         }
                     },
                     _ => {}
@@ -196,17 +202,15 @@ impl<'a> App<'a> {
     }
 
     async fn on_send(&mut self) {
-        if self.input.lines()[0].is_empty() {
+        if self.input.value() == "" {
             return;
         }
 
-        let content = self.input.lines().join("\n");
-        info!("Sending a prompt request with content: {}", content);
+        // we read out the value, then clear the input field
+        let content = self.input.value().to_string();
+        self.input.reset();
 
-        // Clear input by overwriting the widget
-        self.input = TextArea::default();
-        self.input
-            .set_block(Block::default().borders(Borders::ALL).title("Input (Enter to send)"));
+        info!("Sending a prompt request with content: {}", content);
 
         self.messages.push(UIMessage::TextMessage(UITextMessage {
             author: "User".to_string(),
@@ -226,42 +230,54 @@ impl<'a> App<'a> {
             .constraints([Constraint::Min(1), Constraint::Length(1), Constraint::Length(5)])
             .split(f.area());
 
-        let mut text_lines = Vec::new();
+        self.render_chat_history(f, chunks[0]);
+        self.render_status_text(f, chunks[1]);
+        self.render_input(f, chunks[2]);
+    }
+
+    fn render_chat_history(&mut self, f: &mut ratatui::Frame, chunk: Rect) {
+        let mut text_lines: Vec<ratatui::text::Line> = Vec::new();
 
         for m in &self.messages {
-            // Header line
-            text_lines.push(Line::from(vec![Span::styled(
-                format!("{}: ", m.get_author()),
-                Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan),
-            )]));
+            text_lines.push(Line::styled(format!("{}: ", m.get_author()), Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan)));
 
-            // Content line (Paragraph will wrap this automatically!)
-            text_lines.push(Line::from(m.get_text()));
+            let mes = m.get_text_ref();
+            let mut rendered = tui_markdown::from_str(mes);
+            text_lines.append(&mut rendered.lines);
 
-            // Spacer line
             text_lines.push(Line::from(""));
         }
 
-        // 2. Create the Paragraph widget
         let messages_paragraph = Paragraph::new(text_lines)
             .block(Block::default().borders(Borders::ALL).title("Chat History"))
             .wrap(Wrap { trim: true })
-            .scroll((self.vertical_scroll, 0)); // You need to track a u16 for scroll offset
+            .scroll((self.vertical_scroll, 0));
 
-        f.render_widget(messages_paragraph, chunks[0]);
+        f.render_widget(messages_paragraph, chunk);
+    }
 
+    fn render_status_text(&mut self, f: &mut ratatui::Frame, chunk: Rect) {
         let status_style = if self.is_processing {
             Style::default().bg(Color::Yellow).fg(Color::Black)
         } else {
             Style::default().bg(Color::Blue).fg(Color::White)
         };
-
         let status_text = format!(" Model: {} | Mode: Standard | [Esc] Quit ", self.current_model);
         let status_bar = Paragraph::new(status_text)
             .style(status_style)
             .alignment(ratatui::layout::Alignment::Center);
 
-        f.render_widget(status_bar, chunks[1]);
-        f.render_widget(&self.input, chunks[2]);
+        f.render_widget(status_bar, chunk);
+    }
+
+    fn render_input(&mut self, f: &mut ratatui::Frame, chunk: Rect) {
+        let width = chunk.width.max(3) - 3;
+        let scroll = self.input.visual_scroll(width as usize);
+        let input_widget = Paragraph::new(self.input.value())
+            .style(Style::default())
+            .scroll((0, scroll as u16))
+            .block(Block::bordered().title("Input"));
+
+        f.render_widget(input_widget, chunk);
     }
 }
