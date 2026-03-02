@@ -48,7 +48,12 @@ pub struct OllamaAgent {
 }
 
 impl OllamaAgent {
-    pub fn new(url: String, tools: HashMap<String, Box<dyn DynTool>>, model: String) -> (mpsc::Sender<AgentCommand>, mpsc::Receiver<UIEvent>) {
+    pub fn new(
+        url: String,
+        tools: HashMap<String, Box<dyn DynTool>>,
+        model: String,
+        system_prompt: Option<String>,
+    ) -> (mpsc::Sender<AgentCommand>, mpsc::Receiver<UIEvent>) {
         let (command_sender, command_reciever) = mpsc::channel(8);
         let (message_sender, message_reciever) = mpsc::channel(8);
         tokio::spawn(async move {
@@ -62,6 +67,14 @@ impl OllamaAgent {
                 api_connection: ApiConnection::new(url),
                 api_msg_receiver: None,
             };
+            if let Some(prompt) = system_prompt {
+                this.history.push(Message {
+                    role: Role::System,
+                    content: prompt,
+                    images: Vec::new(),
+                    tool_calls: Vec::new(),
+                })
+            }
             // ToDo: add recovery
             this.run().await;
         });
@@ -143,6 +156,7 @@ impl OllamaAgent {
 
     async fn process_message_chunk(&mut self, chunk: StreamChatPartialResponse) {
         debug!("got message chunk: {:#?}", chunk);
+        chunk.message.tool_calls.iter().for_each(|tc| info!("recieved tool call: {:?}", tc));
         // TODO: store stuff like tool calls, and execute them.
         self.message_out
             .send(UIEvent::MessageRecieved(UIMessage::from(chunk)))
@@ -152,6 +166,7 @@ impl OllamaAgent {
     }
     async fn process_last_message(&mut self, last: GenerateChatMessageResponse) {
         debug!("got last message: {:#?}", last);
+        last.message.tool_calls.iter().for_each(|tc| info!("recieved tool call: {:?}", tc));
         // TODO: add tool use here
         self.message_out
             .send(UIEvent::MessageRecieved(UIMessage::from(last)))

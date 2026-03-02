@@ -163,7 +163,7 @@ impl App {
                         KeyCode::Enter => {
                             self.on_send().await;
                         }
-                        KeyCode::Up => self.vertical_scroll -= 1,
+                        KeyCode::Up => self.vertical_scroll = self.vertical_scroll.saturating_sub(1),
                         KeyCode::Down => self.vertical_scroll += 1,
                         _ => {
                             self.input.handle_event(&window_event);
