@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let system_prompt = load_system_prompt();
     let tools = setup_tools();
 
-    let (cmd_sender, _) = OllamaAgent::new("http://localhost:11434".to_string(), tools, "kimi-k2.5:cloud".to_string(), Some(system_prompt));
+    let (cmd_sender, _) = OllamaAgent::new("http://localhost:11434".to_string(), tools, "qwen3.5:397b-cloud".to_string(), Some(system_prompt));
     info!("loaded tools and started agent!");
 
     let mut terminal = setup_terminal()?;
@@ -61,7 +61,7 @@ fn setup_tools() -> HashMap<String, Box<dyn DynTool>> {
     let mut tools: HashMap<String, Box<dyn DynTool>> = HashMap::new();
 
     let fr_tool = FileReaderTool;
-    tools.insert("file_reader".to_string(), Box::new(fr_tool));
+    tools.insert(fr_tool.name().to_string(), Box::new(fr_tool));
 
     tools
 }

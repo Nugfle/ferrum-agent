@@ -136,15 +136,15 @@ pub struct GenerateChatMessageResponse {
     /// Total time spent generating in nanoseconds
     pub total_duration: u64,
     /// Total time spent loading in the model in nanoseconds
-    pub load_duration: u64,
+    pub load_duration: Option<u64>,
     /// Number of tokens in the prompt
     pub prompt_eval_count: u64,
     /// Time spent evaluating the prompt in nanoseconds
-    pub prompt_eval_duration: u64,
+    pub prompt_eval_duration: Option<u64>,
     /// Number of tokens generated in the response
     pub eval_count: u64,
     /// Time spent generating toekns in nanosecons
-    pub eval_duration: u64,
+    pub eval_duration: Option<u64>,
     /// Log probability information for the generated tokens when logprobs are enabled
     #[serde(default)]
     pub logprobs: Vec<LogProb>,
@@ -165,11 +165,52 @@ pub struct StreamChatPartialResponse {
 }
 
 /// The possible responses Reurned by the API
-#[derive(Debug, Deserialize, Clone)]
-#[serde(untagged)]
+#[derive(Debug, Clone)]
 pub enum StreamChatResponse {
     Last(GenerateChatMessageResponse),
     Chunk(StreamChatPartialResponse),
+}
+
+impl<'de> Deserialize<'de> for StreamChatResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+
+        let is_done = value.get("done").and_then(Value::as_bool).expect("done not found in message");
+
+        if is_done {
+            GenerateChatMessageResponse::deserialize(value)
+                .map(StreamChatResponse::Last)
+                .map_err(serde::de::Error::custom)
+        } else {
+            StreamChatPartialResponse::deserialize(value)
+                .map(StreamChatResponse::Chunk)
+                .map_err(serde::de::Error::custom)
+        }
+    }
+}
+
+impl StreamChatResponse {
+    pub fn get_message(&self) -> &GeneratedMessage {
+        match self {
+            Self::Last(l) => &l.message,
+            Self::Chunk(c) => &c.message,
+        }
+    }
+    pub fn get_message_owned(self) -> GeneratedMessage {
+        match self {
+            Self::Last(l) => l.message,
+            Self::Chunk(c) => c.message,
+        }
+    }
+    pub fn is_last(&self) -> bool {
+        match self {
+            Self::Chunk(_) => false,
+            Self::Last(_) => true,
+        }
+    }
 }
 
 /// The representation of a message genererated by the model. We can omit the 'role' field, as it
@@ -181,7 +222,7 @@ pub struct GeneratedMessage {
     /// Optional thinking trace that is returned if [`GenerateChatMessageRequest::think`] was not
     /// false
     #[serde(default)]
-    pub thinking: Option<String>,
+    pub thinking: String,
     /// A list of base-64 encoded images in case the model produced any.
     #[serde(default)]
     pub images: Vec<String>,
@@ -234,7 +275,7 @@ pub struct ToolCallFunction {
     pub description: Option<String>,
     /// A JSON object of the arguments to pass to the function
     #[serde(default)] // in case the model omits the arguments field, if there are none
-    pub arguments: Option<Value>,
+    pub arguments: Value,
 }
 
 /// Representation of an available tool for the model to use

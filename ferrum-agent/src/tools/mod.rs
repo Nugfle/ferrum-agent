@@ -21,7 +21,7 @@ pub trait Tool: Send + Sync {
     }
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum RunToolError {
     #[error("Deserializing Arguments for {tool_name} tool failed. Expected Arguments with Schema: {expected_schema}: {serde_error}")]
     InvalidArguments {
@@ -31,6 +31,8 @@ pub enum RunToolError {
     },
     #[error("Running tool: {tool_name} with arguments: {arguments} failed: {inner}")]
     FailedToRun { tool_name: String, arguments: String, inner: String },
+    #[error("Can't find tool named: {tool_name}")]
+    ToolNotFound { tool_name: String },
 }
 
 pub trait DynTool: Send + Sync {

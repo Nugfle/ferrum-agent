@@ -1,7 +1,4 @@
-use ollama_api::{
-    OllamaApiError,
-    dtos::{GenerateChatMessageResponse, StreamChatPartialResponse},
-};
+use ollama_api::{OllamaApiError, dtos::StreamChatResponse};
 use ratatui::{
     Terminal,
     backend::Backend,
@@ -15,7 +12,10 @@ use tokio::sync::mpsc;
 use tracing::info;
 use tui_input::{Input, backend::crossterm::EventHandler};
 
-use crate::ollama::agent::AgentCommand;
+use crate::{
+    ollama::agent::{AgentCommand, AgentError},
+    tools::RunToolError,
+};
 
 #[derive(Debug, Clone)]
 pub enum UIEvent {
@@ -26,24 +26,34 @@ pub enum UIEvent {
 #[derive(Debug, Clone)]
 pub enum UIMessage {
     TextMessage(UITextMessage),
-    APIError(OllamaApiError),
+    AgentError(AgentError),
     ToolUse(UIToolUseMessage),
 }
 
-impl From<StreamChatPartialResponse> for UIMessage {
-    fn from(value: StreamChatPartialResponse) -> Self {
+impl From<StreamChatResponse> for UIMessage {
+    fn from(resp: StreamChatResponse) -> Self {
         Self::TextMessage(UITextMessage {
-            author: "Assistent".to_string(),
-            content: value.message.content,
+            author: "Assistant".to_string(),
+            content: resp.get_message_owned().content,
         })
     }
 }
-impl From<GenerateChatMessageResponse> for UIMessage {
-    fn from(value: GenerateChatMessageResponse) -> Self {
-        Self::TextMessage(UITextMessage {
-            author: "Assistent".to_string(),
-            content: value.message.content,
-        })
+
+impl From<AgentError> for UIMessage {
+    fn from(e: AgentError) -> Self {
+        Self::AgentError(e)
+    }
+}
+
+impl From<OllamaApiError> for UIMessage {
+    fn from(e: OllamaApiError) -> Self {
+        Self::AgentError(AgentError::APIError(e))
+    }
+}
+
+impl From<RunToolError> for UIMessage {
+    fn from(e: RunToolError) -> Self {
+        Self::AgentError(AgentError::ToolError(e))
     }
 }
 
@@ -51,15 +61,15 @@ impl UIMessage {
     pub fn get_author(&self) -> &str {
         match self {
             UIMessage::TextMessage(m) => &m.author,
-            UIMessage::ToolUse(_) => "System",
-            UIMessage::APIError(_) => "System",
+            UIMessage::ToolUse(_) => "Tool",
+            UIMessage::AgentError(_) => "System",
         }
     }
     pub fn get_text(&self) -> String {
         match self {
             UIMessage::TextMessage(m) => m.content.clone(),
-            UIMessage::ToolUse(t) => format!("using {} with arguments: {}. Status: {:?}", t.tool_name, t.arguments, t.status),
-            UIMessage::APIError(e) => format!("the agent crashed: {}", e),
+            UIMessage::ToolUse(t) => format!("using {} with arguments: {}. Result: {:?}", t.tool_name, t.arguments, t.result),
+            UIMessage::AgentError(e) => format!("the agent crashed: {}", e),
         }
     }
 
@@ -67,7 +77,7 @@ impl UIMessage {
         match self {
             UIMessage::TextMessage(m) => &m.content,
             UIMessage::ToolUse(_) => "The agent is using a tool...",
-            UIMessage::APIError(_) => "There was an error when trying to access the API",
+            UIMessage::AgentError(_) => "There was an error when trying to access the API",
         }
     }
 }
@@ -82,14 +92,7 @@ pub struct UITextMessage {
 pub struct UIToolUseMessage {
     tool_name: String,
     arguments: String,
-    status: ToolUseStatus,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum ToolUseStatus {
-    InProgress,
-    Success,
-    Failure,
+    result: String,
 }
 
 #[derive(Debug)]
@@ -191,8 +194,8 @@ impl App {
                         self.messages.push(UIMessage::TextMessage(new));
                     }
                 }
-                UIMessage::APIError(e) => {
-                    self.messages.push(UIMessage::APIError(e));
+                UIMessage::AgentError(e) => {
+                    self.messages.push(UIMessage::AgentError(e));
                     self.is_processing = false;
                 }
                 UIMessage::ToolUse(_) => todo!(),

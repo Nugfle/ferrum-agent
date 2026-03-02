@@ -61,8 +61,7 @@ impl ApiConnection {
     pub fn new(url: String) -> Self {
         Self { url, client: Client::new() }
     }
-    /// sends the request to the model and waits for a complete response. This method will modify
-    /// the body to set stream to false. If you need a non blocking version that gives you access
+    /// sends the request to the model and waits for a complete response. If you need a non blocking version that gives you access
     /// to a live token stream use [`Self::run_chat_prompt_stream`].
     pub async fn run_chat_prompt_blocking<'a>(
         &self,
@@ -73,7 +72,7 @@ impl ApiConnection {
         let mut message_content: String = String::new();
         let mut tool_calls: Vec<dtos::ToolCall> = Vec::new();
         let mut images: Vec<String> = Vec::new();
-        let mut thoughts: Option<String> = None;
+        let mut thoughts: String = String::new();
 
         while let Some(msg_res) = receiver.recv().await {
             match msg_res? {
@@ -111,14 +110,14 @@ pub fn handle_last(
     mut content_buf: String,
     mut tool_buf: Vec<ToolCall>,
     mut image_buf: Vec<String>,
-    mut thoughts_buf: Option<String>,
+    mut thoughts_buf: String,
     mut last: GenerateChatMessageResponse,
 ) -> GenerateChatMessageResponse {
     content_buf.push_str(&last.message.content);
     tool_buf.extend_from_slice(&last.message.tool_calls);
     image_buf.extend_from_slice(&last.message.images);
-    if let Some(new_thoughts) = last.message.thinking {
-        thoughts_buf.get_or_insert_with(String::new).push_str(&new_thoughts);
+    if !last.message.thinking.is_empty() {
+        thoughts_buf.push_str(&last.message.thinking);
     }
 
     last.message.content = content_buf;
@@ -133,14 +132,14 @@ pub fn put_chunks_into_buffers(
     content_buf: &mut String,
     tool_buf: &mut Vec<ToolCall>,
     image_buf: &mut Vec<String>,
-    thoughts_buf: &mut Option<String>,
+    thoughts_buf: &mut String,
     chunk: StreamChatPartialResponse,
 ) -> Result<(), OllamaApiError> {
     content_buf.push_str(&chunk.message.content);
     tool_buf.extend_from_slice(&chunk.message.tool_calls);
     image_buf.extend_from_slice(&chunk.message.images);
-    if let Some(new_thoughts) = chunk.message.thinking {
-        thoughts_buf.get_or_insert_with(String::new).push_str(&new_thoughts);
+    if !chunk.message.thinking.is_empty() {
+        thoughts_buf.push_str(&chunk.message.thinking);
     }
 
     if chunk.done {
@@ -157,11 +156,12 @@ async fn handle_stream_response<T: DeserializeOwned>(mut resp: Response, sender:
     let mut buffer = Vec::new();
     while let Some(bytes_result) = stream.next().await {
         match bytes_result {
+            // some fancy magic for dealing with the stream and reading it in blocks
             Ok(bytes) => {
                 buffer.extend_from_slice(&bytes);
                 while let Some(line) = buffer
                     .iter()
-                    .position(|b| *b == b'\n')
+                    .position(|b| *b == b'\n') // the newline character is used for as a seperator for chunks
                     .and_then(|pos| Some(buffer.drain(..=pos).collect::<Vec<u8>>()))
                 {
                     let deserialized = serde_json::from_slice::<T>(&line).map_err(|e| e.into());

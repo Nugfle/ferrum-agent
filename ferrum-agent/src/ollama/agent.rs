@@ -1,16 +1,16 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, mem::take};
 
 use futures_util::future::pending;
 use ollama_api::{
     ApiConnection, OllamaApiError,
-    dtos::{GenerateChatMessageResponse, Message, Role, StreamChatPartialResponse, StreamChatResponse},
+    dtos::{GenerateChatMessageResponse, Message, Role, StreamChatResponse, ToolCall},
 };
 use tokio::select;
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 use crate::{
-    tools::DynTool,
+    tools::{DynTool, RunToolError},
     ui::{UIEvent, UIMessage},
 };
 
@@ -30,21 +30,46 @@ pub enum AgentMode {
     Build,
 }
 
+#[derive(thiserror::Error, Debug, Clone)]
+pub enum AgentError {
+    #[error("The Request to the agent failed due to an API error: {0}")]
+    APIError(OllamaApiError),
+    #[error("The Agent failed when trying to run a tool: {0}")]
+    ToolError(RunToolError),
+    #[error("The Agent is unable to reach the UI: {0}")]
+    UIUnreachable(String),
+}
+
+impl From<RunToolError> for AgentError {
+    fn from(e: RunToolError) -> Self {
+        Self::ToolError(e)
+    }
+}
+impl From<OllamaApiError> for AgentError {
+    fn from(e: OllamaApiError) -> Self {
+        Self::APIError(e)
+    }
+}
+
 pub struct OllamaAgent {
     history: Vec<Message>,
     mode: AgentMode,
     model: String,
     tools: HashMap<String, Box<dyn DynTool>>,
 
-    /// this is the command channel from the UI (up)
+    /// this is the command channel from the UI (from up)
     command_reciever: mpsc::Receiver<AgentCommand>,
-    /// this is the connection to the UI (up)
+    /// this is the connection to the UI (to up)
     message_out: mpsc::Sender<UIEvent>,
 
-    /// this is our way of communicating with the API (down)
+    /// this is our way of communicating with the API (to down)
     api_connection: ApiConnection,
-    /// this is the connection to the OllamaAPI (down)
+    /// this is the reciever for messages produced by the Ollama API (from down)
     api_msg_receiver: Option<mpsc::Receiver<Result<StreamChatResponse, OllamaApiError>>>,
+
+    /// this holds the Stream Responses recieved for a prompt. It is used to assemble the full
+    /// message when the last chunk is recieved
+    current_message_buffer: Vec<StreamChatResponse>,
 }
 
 impl OllamaAgent {
@@ -66,6 +91,7 @@ impl OllamaAgent {
                 message_out: message_sender,
                 api_connection: ApiConnection::new(url),
                 api_msg_receiver: None,
+                current_message_buffer: Vec::new(),
             };
             if let Some(prompt) = system_prompt {
                 this.history.push(Message {
@@ -106,7 +132,10 @@ impl OllamaAgent {
             Ok(v) => {
                 self.api_msg_receiver = Some(v);
             }
-            Err(e) => _ = self.message_out.send(UIEvent::MessageRecieved(UIMessage::APIError(e))).await,
+            Err(e) => {
+                error!("An error occured when trying to run the prompt: {}", e);
+                _ = self.message_out.send(UIEvent::MessageRecieved(e.into())).await;
+            }
         }
     }
 
@@ -135,16 +164,19 @@ impl OllamaAgent {
                 },
                 Some(api_result) = option_future => {
                     match api_result {
-                        Ok(message) => {
-                            match message {
-                                StreamChatResponse::Chunk(chunk) => self.process_message_chunk(chunk).await,
-                                StreamChatResponse::Last(last) => self.process_last_message(last).await,
-                            }
+                        Ok(stream_response) => {
+                            if let Err(e) = self.process_stream_response(stream_response).await {
+                                error!("Agent loop stopped because of error: {}", e);
+                                break;
+                            };
                         }
                         Err(e) => {
                             self.message_out
-                                .send(UIEvent::MessageRecieved(UIMessage::APIError(e))).await
-                                .map_err(|e| OllamaApiError::Custom(format!("Can't reach the UI: {}", e)))
+                                .send(UIEvent::MessageRecieved(e.into())).await
+                                .map_err(|e|{
+                                    error!("The Agent is unable to reach the UI: {e}");
+                                    AgentError::UIUnreachable(e.to_string())
+                                })
                                 .unwrap();
                         },
                     }
@@ -154,24 +186,93 @@ impl OllamaAgent {
         }
     }
 
-    async fn process_message_chunk(&mut self, chunk: StreamChatPartialResponse) {
-        debug!("got message chunk: {:#?}", chunk);
-        chunk.message.tool_calls.iter().for_each(|tc| info!("recieved tool call: {:?}", tc));
-        // TODO: store stuff like tool calls, and execute them.
-        self.message_out
-            .send(UIEvent::MessageRecieved(UIMessage::from(chunk)))
-            .await
-            .map_err(|e| OllamaApiError::Custom(format!("Can't reach the UI: {}", e)))
-            .unwrap() // we crash if we can't reach the UI. 
+    async fn process_stream_response(&mut self, msg: StreamChatResponse) -> Result<(), AgentError> {
+        self.current_message_buffer.push(msg.clone());
+        let is_last = msg.is_last();
+
+        self.message_out.send(UIEvent::MessageRecieved(UIMessage::from(msg))).await.map_err(|e| {
+            error!("The Agent is unable to reach the UI: {e}");
+            AgentError::UIUnreachable(e.to_string())
+        })?;
+
+        if is_last {
+            let final_message = self.construct_message();
+
+            self.history.push(Message {
+                role: Role::Assistant,
+                content: final_message.message.content,
+                images: final_message.message.images,
+                tool_calls: final_message.message.tool_calls.clone(),
+            });
+            self.run_tool_calls(&final_message.message.tool_calls).await;
+        }
+
+        Ok(())
     }
-    async fn process_last_message(&mut self, last: GenerateChatMessageResponse) {
-        debug!("got last message: {:#?}", last);
-        last.message.tool_calls.iter().for_each(|tc| info!("recieved tool call: {:?}", tc));
-        // TODO: add tool use here
-        self.message_out
-            .send(UIEvent::MessageRecieved(UIMessage::from(last)))
-            .await
-            .map_err(|e| OllamaApiError::Custom(format!("Can't reach the UI: {}", e)))
-            .unwrap()
+
+    /// constructs the message from the parts stored in the buffer and clears the buffer
+    fn construct_message(&mut self) -> GenerateChatMessageResponse {
+        let buf = take(&mut self.current_message_buffer);
+        let assembled_message = buf
+            .into_iter()
+            .fold(GenerateChatMessageResponse::default(), |mut combined, partial| match partial {
+                StreamChatResponse::Chunk(mut c) => {
+                    combined.message.tool_calls.append(&mut c.message.tool_calls);
+                    combined.message.content.push_str(&c.message.content);
+                    combined.message.images.append(&mut c.message.images);
+                    combined.message.thinking.push_str(&c.message.thinking);
+                    combined
+                }
+                StreamChatResponse::Last(mut l) => {
+                    combined.message.tool_calls.append(&mut l.message.tool_calls);
+                    combined.message.content.push_str(&l.message.content);
+                    combined.message.images.append(&mut l.message.images);
+                    combined.message.thinking.push_str(&l.message.thinking);
+                    combined.done = true;
+                    combined.model = l.model;
+                    combined.created_at = l.created_at;
+                    combined.logprobs = l.logprobs;
+                    combined.eval_count = l.eval_count;
+                    combined.done_reason = l.done_reason;
+                    combined.load_duration = l.load_duration;
+                    combined.eval_duration = l.eval_duration;
+                    combined.total_duration = l.total_duration;
+                    combined.prompt_eval_count = l.prompt_eval_count;
+                    combined
+                }
+            });
+        assembled_message
+    }
+
+    async fn run_tool_calls(&mut self, tool_calls: &Vec<ToolCall>) {
+        for tool_call in tool_calls {
+            info!("running tool call: {}, with arguments: {}", tool_call.function.name, tool_call.function.arguments);
+            let msg = match self.execute_tool_call(&tool_call).await {
+                Ok(res) => Message {
+                    role: Role::Tool,
+                    content: res,
+                    images: Vec::new(),
+                    tool_calls: Vec::new(),
+                },
+                Err(e) => Message {
+                    role: Role::Tool,
+                    content: format!("The tool call failed with the error: {e}"),
+                    images: Vec::new(),
+                    tool_calls: Vec::new(),
+                },
+            };
+            info!("finished tool call with result: {:?}", msg);
+            self.history.push(msg)
+        }
+    }
+
+    async fn execute_tool_call(&mut self, tool_call: &ToolCall) -> Result<String, RunToolError> {
+        if let Some(tool) = self.tools.get(&tool_call.function.name) {
+            tool.run(tool_call.function.arguments.clone()).await
+        } else {
+            Err(RunToolError::ToolNotFound {
+                tool_name: tool_call.function.name.clone(),
+            })
+        }
     }
 }
