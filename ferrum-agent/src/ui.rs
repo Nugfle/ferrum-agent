@@ -205,7 +205,7 @@ impl App {
     }
 
     async fn on_send(&mut self) {
-        if self.input.value() == "" {
+        if self.input.value().is_empty() {
             return;
         }
 

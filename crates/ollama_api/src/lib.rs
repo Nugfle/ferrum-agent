@@ -7,7 +7,9 @@ use futures_util::{StreamExt, TryStreamExt};
 use reqwest::{Client, Response};
 use serde::de::DeserializeOwned;
 use thiserror::Error;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
+use tokio_util::io::StreamReader;
 use tracing::{info, instrument};
 pub mod dtos;
 
@@ -29,7 +31,6 @@ pub enum OllamaApiError {
 
 impl From<reqwest::Error> for OllamaApiError {
     fn from(value: reqwest::Error) -> Self {
-        value.to_string();
         if value.is_connect() {
             OllamaApiError::Unreachable(value.to_string())
         } else if value.is_timeout() {
@@ -152,23 +153,11 @@ pub fn put_chunks_into_buffers(
 }
 
 async fn handle_stream_response<T: DeserializeOwned>(mut resp: Response, sender: mpsc::Sender<Result<T, OllamaApiError>>) {
-    let mut stream = resp.bytes_stream();
-    let mut buffer = Vec::new();
-    while let Some(bytes_result) = stream.next().await {
-        match bytes_result {
-            // some fancy magic for dealing with the stream and reading it in blocks
-            Ok(bytes) => {
-                buffer.extend_from_slice(&bytes);
-                while let Some(line) = buffer
-                    .iter()
-                    .position(|b| *b == b'\n') // the newline character is used for as a seperator for chunks
-                    .and_then(|pos| Some(buffer.drain(..=pos).collect::<Vec<u8>>()))
-                {
-                    let deserialized = serde_json::from_slice::<T>(&line).map_err(|e| e.into());
-                    _ = sender.send(deserialized).await;
-                }
-            }
-            Err(e) => _ = sender.send(Err(e.into())).await,
-        }
+    let stream = resp.bytes_stream().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+    let stream_reader = StreamReader::new(stream);
+    let mut lines = BufReader::new(stream_reader).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let deserialized = serde_json::from_str::<T>(&line).map_err(|e| e.into());
+        _ = sender.send(deserialized).await;
     }
 }

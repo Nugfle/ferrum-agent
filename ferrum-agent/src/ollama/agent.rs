@@ -244,7 +244,7 @@ impl OllamaAgent {
         assembled_message
     }
 
-    async fn run_tool_calls(&mut self, tool_calls: &Vec<ToolCall>) {
+    async fn run_tool_calls(&mut self, tool_calls: &[ToolCall]) {
         for tool_call in tool_calls {
             info!("running tool call: {}, with arguments: {}", tool_call.function.name, tool_call.function.arguments);
             let msg = match self.execute_tool_call(&tool_call).await {
