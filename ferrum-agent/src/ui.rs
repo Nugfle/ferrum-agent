@@ -90,9 +90,9 @@ pub struct UITextMessage {
 
 #[derive(Debug, Clone)]
 pub struct UIToolUseMessage {
-    tool_name: String,
-    arguments: String,
-    result: String,
+    pub tool_name: String,
+    pub arguments: String,
+    pub result: String,
 }
 
 #[derive(Debug)]
@@ -198,7 +198,10 @@ impl App {
                     self.messages.push(UIMessage::AgentError(e));
                     self.is_processing = false;
                 }
-                UIMessage::ToolUse(_) => todo!(),
+                UIMessage::ToolUse(tool) => {
+                    self.messages.push(UIMessage::ToolUse(tool));
+                    self.is_processing = true;
+                }
             },
             _ => self.messages.push(msg),
         }

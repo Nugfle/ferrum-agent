@@ -23,10 +23,13 @@ pub trait Tool: Send + Sync {
 
 #[derive(Error, Debug, Clone)]
 pub enum RunToolError {
-    #[error("Deserializing Arguments for {tool_name} tool failed. Expected Arguments with Schema: {expected_schema}: {serde_error}")]
+    #[error(
+        "Deserializing Arguments for {tool_name} tool failed. Expected Arguments with Schema: {expected_schema}, but got arguments: {found_arguments}. {serde_error}"
+    )]
     InvalidArguments {
         tool_name: String,
         expected_schema: String,
+        found_arguments: String,
         serde_error: String,
     },
     #[error("Running tool: {tool_name} with arguments: {arguments} failed: {inner}")]
@@ -69,9 +72,10 @@ impl<T: Tool> DynTool for T {
     fn run(&self, input: Value) -> Pin<Box<dyn Future<Output = Result<String, RunToolError>> + Send + '_>> {
         let argument_schema = self.get_argument_schema();
         Box::pin(async move {
-            let args: T::Arguments = serde_json::from_value(input).map_err(|e| RunToolError::InvalidArguments {
+            let args: T::Arguments = serde_json::from_value(input.clone()).map_err(|e| RunToolError::InvalidArguments {
                 tool_name: Self::NAME.to_string(),
-                expected_schema: serde_json::to_string(&argument_schema).expect("no hashmap with non string keys"),
+                expected_schema: format!("{:?}", argument_schema),
+                found_arguments: input.to_string(),
                 serde_error: e.to_string(),
             })?;
             self.run_tool(args.clone()).await.map_err(|e| RunToolError::FailedToRun {

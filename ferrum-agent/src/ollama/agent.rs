@@ -11,7 +11,7 @@ use tracing::{debug, error, info};
 
 use crate::{
     tools::{DynTool, RunToolError},
-    ui::{UIEvent, UIMessage},
+    ui::{UIEvent, UIMessage, UIToolUseMessage},
 };
 
 #[derive(Debug, Clone)]
@@ -107,13 +107,15 @@ impl OllamaAgent {
         (command_sender, message_reciever)
     }
 
-    async fn start_generating_prompt(&mut self, prompt: String) {
-        self.history.push(Message {
-            role: Role::User,
-            content: prompt,
-            images: Vec::new(),
-            tool_calls: Vec::new(),
-        });
+    async fn start_generating_prompt(&mut self, prompt: Option<String>) {
+        if let Some(prompt) = prompt {
+            self.history.push(Message {
+                role: Role::User,
+                content: prompt,
+                images: Vec::new(),
+                tool_calls: Vec::new(),
+            });
+        }
         let mut body = ollama_api::dtos::GenerateChatMessageRequest {
             model: &self.model,
             messages: &self.history,
@@ -159,7 +161,7 @@ impl OllamaAgent {
                         AgentCommand::ChangeOutChannel(channel) => self.message_out = channel,
                         AgentCommand::ChangeMode(mode) => self.mode = mode,
                         AgentCommand::ChangeModel(model) => self.model = model,
-                        AgentCommand::GeneratePrompt(prompt) => self.start_generating_prompt(prompt).await
+                        AgentCommand::GeneratePrompt(prompt) => self.start_generating_prompt(Some(prompt)).await
                     }
                 },
                 Some(api_result) = option_future => {
@@ -204,7 +206,11 @@ impl OllamaAgent {
                 images: final_message.message.images,
                 tool_calls: final_message.message.tool_calls.clone(),
             });
-            self.run_tool_calls(&final_message.message.tool_calls).await;
+            if !final_message.message.tool_calls.is_empty() {
+                self.run_tool_calls(&final_message.message.tool_calls).await;
+                // after running the tools we have to send the results back to the model
+                self.start_generating_prompt(None).await;
+            }
         }
 
         Ok(())
@@ -262,6 +268,14 @@ impl OllamaAgent {
                 },
             };
             info!("finished tool call with result: {:?}", msg);
+            self.message_out
+                .send(UIEvent::MessageRecieved(UIMessage::ToolUse(UIToolUseMessage {
+                    tool_name: tool_call.function.name.clone(),
+                    arguments: tool_call.function.arguments.to_string(),
+                    result: msg.content.clone(),
+                })))
+                .await
+                .expect("can't reach UI");
             self.history.push(msg)
         }
     }
