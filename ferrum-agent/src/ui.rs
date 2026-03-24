@@ -111,12 +111,19 @@ pub struct App {
 }
 
 async fn window_event_loop(event_sender: mpsc::Sender<UIEvent>) {
-    loop {
+    'event_loop: loop {
         let event = event::read().expect("failed to read window event");
         event_sender
-            .send(UIEvent::WindowEvent(event))
+            .send(UIEvent::WindowEvent(event.clone()))
             .await
             .expect("failed to send UI event to main loop");
+        match event {
+            Event::Key(key) => match key.code {
+                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => break 'event_loop,
+                _ => {}
+            },
+            _ => {}
+        }
     }
 }
 

@@ -143,7 +143,7 @@ impl OllamaAgent {
 
     async fn run(&mut self) {
         info!("Starting the main Agent Loop");
-        loop {
+        'agent_loop: loop {
             // this future will not trigger if api_msg_receiver is None turning the select into a
             // simple await for the command channel
             let option_future = async {
@@ -156,7 +156,10 @@ impl OllamaAgent {
             select! {
                 Some(command) = self.command_reciever.recv() =>{
                     match command {
-                        AgentCommand::Stop => break,
+                        AgentCommand::Stop => {
+                            info!("Agent recieved stop command, stopping agent loop.");
+                            break 'agent_loop;
+                        }
                         AgentCommand::ClearHistory => self.history = Vec::new(),
                         AgentCommand::ChangeOutChannel(channel) => self.message_out = channel,
                         AgentCommand::ChangeMode(mode) => self.mode = mode,

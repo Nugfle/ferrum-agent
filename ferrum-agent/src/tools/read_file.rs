@@ -15,7 +15,7 @@ impl Tool for FileReaderTool {
     type Arguments = ReadFileArgs;
     type ToolError = tokio::io::Error;
     const NAME: &str = "read_file";
-    const DESCRIPTION: &str = "This tool allows you to open a file and read its content. It requires the path as an argument";
+    const DESCRIPTION: &str = "Read the contents of the file provided by path.";
 
     fn run_tool(&self, args: Self::Arguments) -> std::pin::Pin<Box<dyn Future<Output = Result<String, Self::ToolError>> + Send>> {
         Box::pin(async move {

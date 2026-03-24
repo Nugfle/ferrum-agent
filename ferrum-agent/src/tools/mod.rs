@@ -5,6 +5,7 @@ use serde_json::Value;
 use std::{error::Error, fmt::Debug, pin::Pin};
 use thiserror::Error;
 
+pub mod ls;
 pub mod read_file;
 
 /// the Trait that all Tools that the model can use have to implement
