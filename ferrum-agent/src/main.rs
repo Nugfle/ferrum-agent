@@ -50,10 +50,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn load_system_prompt() -> String {
     let mut system_prompt = String::new();
-    _ = File::open("./SOUL.md")
-        .expect("SOUL.md not found")
-        .read_to_string(&mut system_prompt)
-        .unwrap();
+    let _ = File::open("./SOUL.md")
+        .map(|mut file| file.read_to_string(&mut system_prompt))
+        .inspect_err(|e| info!("failed to read SOUL.md: {}. Using default system prompt.", e));
     system_prompt
 }
 
