@@ -18,7 +18,7 @@ use tracing_appender::rolling;
 
 use crate::{
     ollama::agent::OllamaAgent,
-    tools::{DynTool, ls::ListFilesTool, read_file::FileReaderTool},
+    tools::{DynTool, ls::ListFilesTool, read_file::FileReaderTool, write_file::WriteFileTool},
     ui::App,
 };
 
@@ -60,8 +60,10 @@ fn setup_tools() -> HashMap<String, Box<dyn DynTool>> {
     let mut tools: HashMap<String, Box<dyn DynTool>> = HashMap::new();
 
     let fr_tool = FileReaderTool;
+    let fw_tool = WriteFileTool;
     let ls_tool = ListFilesTool;
     tools.insert(fr_tool.name().to_string(), Box::new(fr_tool));
+    tools.insert(fw_tool.name().to_string(), Box::new(fw_tool));
     tools.insert(ls_tool.name().to_string(), Box::new(ls_tool));
 
     tools

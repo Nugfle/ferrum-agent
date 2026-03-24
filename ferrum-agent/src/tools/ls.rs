@@ -20,18 +20,17 @@ impl Tool for ListFilesTool {
 
     fn run_tool(&self, args: Self::Arguments) -> std::pin::Pin<Box<dyn Future<Output = Result<String, Self::ToolError>> + Send>> {
         Box::pin(async move {
-            let mut entries = String::new();
+            let mut entries = String::from("Directory entries: ");
             info!("listing directory entries in path: '{}'", &args.path);
             let mut dir = fs::read_dir(&args.path).await?;
             while let Some(entry) = dir.next_entry().await? {
-                info!("found direcotry entry: {}", entry.file_name().display());
                 if entry.file_type().await?.is_dir() {
-                    entries.push_str(&format!("{}/", entry.file_name().display()));
+                    entries.push_str(&format!("{}/, ", entry.file_name().display()));
                 } else {
-                    entries.push_str(&format!("{}", entry.file_name().display()));
+                    entries.push_str(&format!("{}, ", entry.file_name().display()));
                 }
             }
-            Ok(entries)
+            Ok(entries.trim_end_matches(", ").to_string())
         })
     }
 }

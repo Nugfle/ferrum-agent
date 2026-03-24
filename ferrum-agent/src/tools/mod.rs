@@ -7,6 +7,7 @@ use thiserror::Error;
 
 pub mod ls;
 pub mod read_file;
+pub mod write_file;
 
 /// the Trait that all Tools that the model can use have to implement
 pub trait Tool: Send + Sync {
