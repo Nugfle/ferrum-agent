@@ -1,11 +1,6 @@
-use std::default;
-
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tokio::{
-    fs::File,
-    io::{AsyncReadExt, AsyncWriteExt},
-};
+use tokio::{fs::File, io::AsyncWriteExt};
 
 use crate::tools::Tool;
 
@@ -36,7 +31,7 @@ impl Tool for WriteFileTool {
         Box::pin(async move {
             let mut f = match args.mode {
                 WriteMode::Append => File::options().append(true).open(args.path).await?,
-                WriteMode::Overwrite => File::options().write(true).create(true).open(args.path).await?,
+                WriteMode::Overwrite => File::options().write(true).create(true).truncate(true).open(args.path).await?,
             };
             f.write_all(args.content.as_bytes()).await?;
             Ok("Successfully updated the file".to_string())

@@ -153,7 +153,7 @@ pub fn put_chunks_into_buffers(
 }
 
 async fn handle_stream_response<T: DeserializeOwned>(mut resp: Response, sender: mpsc::Sender<Result<T, OllamaApiError>>) {
-    let stream = resp.bytes_stream().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+    let stream = resp.bytes_stream().map_err(|e| std::io::Error::other(e));
     let stream_reader = StreamReader::new(stream);
     let mut lines = BufReader::new(stream_reader).lines();
     while let Ok(Some(line)) = lines.next_line().await {

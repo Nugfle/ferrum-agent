@@ -113,16 +113,17 @@ pub struct App {
 async fn window_event_loop(event_sender: mpsc::Sender<UIEvent>) {
     'event_loop: loop {
         let event = event::read().expect("failed to read window event");
+
         event_sender
             .send(UIEvent::WindowEvent(event.clone()))
             .await
             .expect("failed to send UI event to main loop");
-        match event {
-            Event::Key(key) => match key.code {
-                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => break 'event_loop,
-                _ => {}
-            },
-            _ => {}
+
+        if let Event::Key(key) = event
+            && let KeyCode::Char('d') = key.code
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            break 'event_loop;
         }
     }
 }
@@ -164,23 +165,24 @@ impl App {
         terminal.draw(|f| self.ui(f)).expect("failed to draw ui");
         while let Some(event) = self.event_receiver.recv().await {
             match event {
-                UIEvent::WindowEvent(window_event) => match window_event {
-                    Event::Key(key) => match key.code {
-                        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            _ = self.agent_cmd_sender.send(AgentCommand::Stop).await;
-                            self.should_quit = true;
+                UIEvent::WindowEvent(window_event) => {
+                    if let Event::Key(key) = window_event {
+                        match key.code {
+                            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                _ = self.agent_cmd_sender.send(AgentCommand::Stop).await;
+                                self.should_quit = true;
+                            }
+                            KeyCode::Enter => {
+                                self.on_send().await;
+                            }
+                            KeyCode::Up => self.vertical_scroll = self.vertical_scroll.saturating_sub(1),
+                            KeyCode::Down => self.vertical_scroll += 1,
+                            _ => {
+                                self.input.handle_event(&window_event);
+                            }
                         }
-                        KeyCode::Enter => {
-                            self.on_send().await;
-                        }
-                        KeyCode::Up => self.vertical_scroll = self.vertical_scroll.saturating_sub(1),
-                        KeyCode::Down => self.vertical_scroll += 1,
-                        _ => {
-                            self.input.handle_event(&window_event);
-                        }
-                    },
-                    _ => {}
-                },
+                    }
+                }
                 UIEvent::MessageRecieved(msg) => self.on_msg(msg).await,
             }
             if self.should_quit {
@@ -196,7 +198,6 @@ impl App {
                 UIMessage::TextMessage(new) => {
                     if latest.author == new.author {
                         latest.content.push_str(&new.content);
-                        return;
                     } else {
                         self.messages.push(UIMessage::TextMessage(new));
                     }

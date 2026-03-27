@@ -380,7 +380,7 @@ impl Serialize for KeepAlive {
         S: serde::Serializer,
     {
         match self {
-            Self::Duration(d) => serializer.serialize_str(format!("{}s", d.as_secs().to_string()).as_str()),
+            Self::Duration(d) => serializer.serialize_str(format!("{}s", d.as_secs()).as_str()),
             Self::Indefinitely => serializer.serialize_str("-1s"),
         }
     }

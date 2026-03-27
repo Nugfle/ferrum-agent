@@ -73,6 +73,7 @@ pub struct OllamaAgent {
 }
 
 impl OllamaAgent {
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(
         url: String,
         tools: HashMap<String, Box<dyn DynTool>>,
@@ -222,8 +223,7 @@ impl OllamaAgent {
     /// constructs the message from the parts stored in the buffer and clears the buffer
     fn construct_message(&mut self) -> GenerateChatMessageResponse {
         let buf = take(&mut self.current_message_buffer);
-        let assembled_message = buf
-            .into_iter()
+        buf.into_iter()
             .fold(GenerateChatMessageResponse::default(), |mut combined, partial| match partial {
                 StreamChatResponse::Chunk(mut c) => {
                     combined.message.tool_calls.append(&mut c.message.tool_calls);
@@ -249,14 +249,13 @@ impl OllamaAgent {
                     combined.prompt_eval_count = l.prompt_eval_count;
                     combined
                 }
-            });
-        assembled_message
+            })
     }
 
     async fn run_tool_calls(&mut self, tool_calls: &[ToolCall]) {
         for tool_call in tool_calls {
             info!("running tool call: {}, with arguments: {}", tool_call.function.name, tool_call.function.arguments);
-            let msg = match self.execute_tool_call(&tool_call).await {
+            let msg = match self.execute_tool_call(tool_call).await {
                 Ok(res) => Message {
                     role: Role::Tool,
                     content: res,
